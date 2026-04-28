@@ -1,41 +1,102 @@
+require("dotenv").config();
+
 const express = require("express");
+const mongoose = require("mongoose");
 const multer = require("multer");
-const cors = require("cors");
 const axios = require("axios");
-const FormData = require("form-data");
-const fs = require("fs");
+const cors = require("cors");
+const FormData = require("form-data"); // ✅ IMPORTANT FIX
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
-const upload = multer({ dest: "uploads/" });
+// 📁 Multer (store file in memory)
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Test route
-app.get("/", (req, res) => {
-  res.send("Backend running 🚀");
+/* =========================
+   🗄️ MongoDB Connection
+========================= */
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB Connected"))
+  .catch((err) => console.error("MongoDB Error:", err));
+
+/* =========================
+   🧾 Schema
+========================= */
+const DetectionSchema = new mongoose.Schema({
+  filename: String,
+  total_defects: Number,
+  detections: Array,
+  timestamp: { type: Date, default: Date.now },
 });
 
-// Detect route
-app.post("/detect", upload.single("image"), async (req, res) => {
+const Detection = mongoose.model("Detection", DetectionSchema);
+
+/* =========================
+   🔍 DETECT ROUTE
+========================= */
+app.post("/api/detect", upload.single("file"), async (req, res) => {
   try {
-    const imagePath = req.file.path;
+    // ❗ Safety check
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
 
+    // 📦 Create FormData
     const formData = new FormData();
-    formData.append("file", fs.createReadStream(imagePath));
 
+    formData.append("file", req.file.buffer, {
+      filename: req.file.originalname,
+      contentType: req.file.mimetype,
+    });
+
+    // 🔗 Call AI service
     const response = await axios.post(
-      "http://127.0.0.1:8000/detect",
+      `${process.env.AI_SERVICE_URL}/detect`,
       formData,
       {
-        headers: formData.getHeaders(),
+        headers: formData.getHeaders(), // ✅ IMPORTANT
       }
     );
 
-    res.json(response.data);
+    const data = response.data;
+
+    // 💾 Save to MongoDB
+    await Detection.create({
+      filename: req.file.originalname,
+      total_defects: data.total_defects,
+      detections: data.detections,
+    });
+
+    // 🔁 Send response to frontend
+    res.json(data);
+
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Error processing image");
+    console.error("Detection Error:", err.message);
+    res.status(500).json({ error: "Detection failed" });
   }
 });
 
-app.listen(5000, () => console.log("Backend running on port 5000"));
+/* =========================
+   📊 HISTORY ROUTE
+========================= */
+app.get("/api/history", async (req, res) => {
+  try {
+    const history = await Detection.find().sort({ timestamp: -1 });
+    res.json(history);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch history" });
+  }
+});
+
+/* =========================
+   🚀 START SERVER
+========================= */
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
